@@ -66,6 +66,8 @@ test('selects the exact option, saves once and verifies API age rating', async (
   const clicks = browser.calls.filter(call => call.name === 'browser_click');
   assert.equal(clicks.length, 3);
   assert.equal(clicks[1].args.target, '[role="option"]:text-is("6+")');
-  assert.equal(clicks.filter(call => /Сохранить/.test(call.args.target ?? '')).length, 1);
+  const saveClicks = clicks.filter(call => /Сохранить/.test(call.args.target ?? ''));
+  assert.equal(saveClicks.length, 1);
+  assert.equal(saveClicks[0].args.target, 'button.form__button[type="submit"]:text-is("Сохранить")');
   assert.equal(clicks.some(call => /модерац|moderation/i.test(call.args.target ?? '')), false);
 });

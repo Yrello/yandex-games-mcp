@@ -67,7 +67,9 @@ test('classification saves one uniquely identified category and verifies its API
   assert.equal(value.ok, true);
   assert.equal(value.saved, true);
   assert.equal(value.verified, true);
-  assert.equal(browser.calls.filter(x => x.name === 'browser_click' && /Сохранить/.test(x.args.target ?? '')).length, 1);
+  const saveClicks = browser.calls.filter(x => x.name === 'browser_click' && /Сохранить/.test(x.args.target ?? ''));
+  assert.equal(saveClicks.length, 1);
+  assert.equal(saveClicks[0].args.target, 'button.form__button[type="submit"]:text-is("Сохранить")');
   assert.equal(browser.calls.some(x => x.name === 'browser_click' && /модерац|moderation/i.test(x.args.target ?? '')), false);
 });
 

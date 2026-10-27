@@ -92,7 +92,7 @@ export async function updateDraftAgeRating(gameId, ageRating, browser) {
       || selected.save_count !== 1 || !selected.save_enabled)
     throw new Error('selected age rating or enabled Save button is not uniquely confirmed; nothing was saved');
 
-  const saved = await browser.call('browser_click', { target: 'button:has-text("Сохранить")', element: 'кнопка сохранения черновика' });
+  const saved = await browser.call('browser_click', { target: 'button.form__button[type="submit"]:text-is("Сохранить")', element: 'кнопка сохранения черновика' });
   if (saved?.isError) throw new Error('draft Save failed; reread draft before retrying');
   await browser.call('browser_wait_for', { time: 2 });
   const after = await evaluate(browser, `async () => {

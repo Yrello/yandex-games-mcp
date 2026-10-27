@@ -18,3 +18,4 @@ browser-state-*/
 *.webm
 *.trace.zip
 *.storage-state.json
+/MILESTONE.md

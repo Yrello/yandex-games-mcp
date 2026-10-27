@@ -52,7 +52,7 @@ test('screenshot upload stops before Save when preview has no new file ID', asyn
   const value = JSON.parse(result.content[0].text);
   assert.equal(value.ok, false);
   assert.equal(value.saved, false);
-  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && /Сохранить/.test(call.args.target ?? '')).length, 0);
+  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && /form__button\[type="submit"\]:visible/.test(call.args.target ?? '')).length, 0);
   assert.equal(browser.calls.filter(call => call.name === 'browser_file_upload').length, 1);
 }));
 
@@ -66,6 +66,6 @@ test('screenshot upload saves once only after preview ID and verifies the API ID
   assert.equal(value.ok, true, result.content[0].text);
   assert.equal(value.verified, true);
   assert.equal(value.selected_file_id, '14240000');
-  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && /Сохранить/.test(call.args.target ?? '')).length, 1);
+  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && /form__button\[type="submit"\]:visible/.test(call.args.target ?? '')).length, 1);
   assert.equal(browser.calls.some(call => call.name === 'browser_click' && /модерац|moderation/i.test(call.args.target ?? '')), false);
 }));

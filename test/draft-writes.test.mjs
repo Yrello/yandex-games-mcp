@@ -35,10 +35,10 @@ function mockBrowser(values) {
 const page = gameId => ({ origin:'https://games.yandex.ru', pathname:`/console/application/${gameId}`, hash:'#application-info-draft' });
 function draft(gameId, language = 'ru', overrides = {}) {
   return { ok:true, game_id:gameId,
-    title:{ru:'Старое RU',en:'Old EN'},
+    title:{ru:'Старое RU',en:'Old EN',es:'Old ES'},
     fields:{ seo_description:{ru:'',en:''}, description:{ru:'',en:''},
-      short_description:{ru:'',en:''}, instructions:{ru:'',en:''}, features:{languages:['ru','en']}, ...overrides.fields },
-    completeness:{ru:{},en:{}}, media:{icon:{ru:'old-icon',en:'old-icon-en'},cover:{ru:'old-cover',en:'old-cover-en'}},
+      short_description:{ru:'',en:'',es:''}, instructions:{ru:'',en:'',es:''}, features:{languages:['ru','en']}, ...overrides.fields },
+    completeness:{ru:{},en:{},es:{}}, media:{icon:{ru:'old-icon',en:'old-icon-en',es:'old-icon-es'},cover:{ru:'old-cover',en:'old-cover-en',es:'old-cover-es'}},
     active_language:language, ...overrides };
 }
 const pageAndDraft = (gameId, data) => [page(gameId), data];
@@ -54,17 +54,18 @@ test('localized update validates arguments before opening the browser', async ()
   assert.equal(browser.calls.length, 0);
 });
 
-for (const language of ['ru','en']) {
+for (const language of ['ru','en','es']) {
   test(`localized update selects ${language} and verifies saved API values`, async () => {
-    const gameId='101003', value=language === 'ru' ? 'Новое название' : 'New title';
+    const gameId='101003', value=language === 'ru' ? 'Новое название' : language === 'en' ? 'New title' : 'Nuevo titulo';
+    const label = language === 'ru' ? 'Русский' : language === 'en' ? 'Английский' : 'испанский';
     const values = [
       ...pageAndDraft(gameId, draft(gameId)),
-      [{label:'Русский',active:true},{label:'Английский',active:false}],
-      ...(language === 'en' ? [page(gameId), ['Английский']] : [['Русский']]),
-      [{selector:`#title${gameId}`,count:1,tag:'INPUT',actual:language==='ru'?'Старое RU':'Old EN',expected:language==='ru'?'Старое RU':'Old EN'}],
+      [{label:'Русский',active:true},{label:'Английский',active:false},{label:'Испанский',active:false}],
+      ...(language !== 'ru' ? [page(gameId), [label === 'испанский' ? 'Испанский' : label]] : [['Русский']]),
+      [{selector:`#title${gameId}`,count:1,tag:'INPUT',actual:language==='ru'?'Старое RU':language==='en'?'Old EN':'Old ES',expected:language==='ru'?'Старое RU':language==='en'?'Old EN':'Old ES'}],
       [{selector:`#title${gameId}`,actual:value,expected:value}],
-      {count:1,disabled:false}, page(gameId), [language==='ru'?'Русский':'Английский'],
-      draft(gameId, language, { title:{ru:language==='ru'?value:'Старое RU', en:language==='en'?value:'Old EN'} }),
+      {count:1,disabled:false}, page(gameId), [label === 'испанский' ? 'Испанский' : label],
+      draft(gameId, language, { title:{ru:language==='ru'?value:'Старое RU', en:language==='en'?value:'Old EN', es:language==='es'?value:'Old ES'} }),
     ];
     const browser=mockBrowser(values);
     const result=await invokeDomainTool('update_localized_fields',{game_id:gameId,language,fields:{title:value}},browser);
@@ -88,12 +89,123 @@ test('localized update fails closed for another page and for a locale absent fro
 
   const noEnglish=draft('101003');
   noEnglish.fields.features.languages=['ru'];
+  delete noEnglish.title.en;
+  for (const field of ['seo_description','description','short_description','instructions']) delete noEnglish.fields[field].en;
+  delete noEnglish.media.icon.en;
+  delete noEnglish.media.cover.en;
   delete noEnglish.completeness.en;
-  const wrongLocale=mockBrowser(pageAndDraft('101003',noEnglish));
+  const wrongLocale=mockBrowser([...pageAndDraft('101003',noEnglish), [{ label: 'Русский', active: true }]]);
   const localeResult=await invokeDomainTool('update_localized_fields',{game_id:'101003',language:'en',fields:{title:'x'}},wrongLocale);
   assert.equal(localeResult.isError,true);
-  assert.match(localeResult.content[0].text,/Language en is not present/);
+  assert.match(localeResult.content[0].text,/language tabs are missing or ambiguous/);
   assert.equal(wrongLocale.calls.some(call=>call.name==='browser_fill_form'),false);
+});
+
+test('localized update can fill an empty locale present in the Console tabs', async () => {
+  const gameId = '101003';
+  const emptyLocale = draft(gameId);
+  delete emptyLocale.title.es;
+  for (const field of ['seo_description','description','short_description','instructions']) delete emptyLocale.fields[field].es;
+  delete emptyLocale.completeness.es;
+  delete emptyLocale.media.icon.es;
+  delete emptyLocale.media.cover.es;
+  const values = [
+    ...pageAndDraft(gameId, emptyLocale),
+    [{ label: 'Русский', active: true }, { label: 'Испанский', active: false }],
+    page(gameId), ['Испанский'],
+    [{ selector: `#title${gameId}`, count: 1, tag: 'INPUT', actual: '', expected: '' }],
+    [{ selector: `#title${gameId}`, actual: 'Titulo', expected: 'Titulo' }],
+    { count: 1, disabled: false }, page(gameId), ['Испанский'],
+    { ...emptyLocale, title: { ...emptyLocale.title, es: 'Titulo' } },
+  ];
+  const browser = mockBrowser(values);
+  const result = await invokeDomainTool('update_localized_fields', { game_id: gameId, language: 'es', fields: { title: 'Titulo' } }, browser);
+  assert.equal(result.isError, undefined, `${result.content[0].text}\n${JSON.stringify(browser.calls.map(call => call.args.function ?? call.args.target))}`);
+  assert.equal(resultValue(result).verified, true);
+  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && /form__button\[type="submit"\]:visible/.test(call.args.target ?? '')).length, 1);
+});
+
+test('add_draft_localization selects one exact picker option and saves once', async () => {
+  const gameId = '101003';
+  const before = draft(gameId);
+  delete before.title.es;
+  for (const field of ['seo_description','description','short_description','instructions']) delete before.fields[field].es;
+  delete before.completeness.es;
+  delete before.media.icon.es;
+  delete before.media.cover.es;
+  const after = { ...before, fields: { ...before.fields, features: { ...before.fields.features, languages: ['ru','en','es'] } }, completeness: { ...before.completeness, es: {} } };
+  const browser = mockBrowser([
+    ...pageAndDraft(gameId, before),
+    { root_count: 1, tabs: [{ label: 'Русский', active: true }, { label: 'Английский', active: false }], picker_count: 1, picker_disabled: false, listbox_count: 0 },
+    page(gameId),
+    { listbox_count: 1, options: [{ label: 'Испанский', disabled: false }] },
+    page(gameId),
+    [{ label: 'Русский', active: false }, { label: 'Английский', active: false }, { label: 'Испанский', active: true }],
+    { count: 1, enabled: 1, disabled: false },
+    page(gameId), after,
+  ]);
+  const result = await invokeDomainTool('add_draft_localization', { game_id: gameId, language: 'es' }, browser);
+  const report = resultValue(result);
+  assert.equal(result.isError, undefined, result.content[0].text);
+  assert.equal(report.ok, true, result.content[0].text);
+  assert.equal(report.verified, true);
+  assert.deepEqual(report.locale_codes, ['ru','en','es']);
+  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && call.args.target === '[data-qa="application-draft-languages"] > .g-select > button').length, 1);
+  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && call.args.target === '[role="listbox"] [role="option"]:has-text("Испанский")').length, 1);
+  assert.equal(browser.calls.filter(call => call.name === 'browser_click' && call.args.target.includes('form__button[type="submit"]')).length, 1);
+  assert.equal(browser.calls.some(call => call.name === 'browser_click' && /has-text\("Сохранить"\)/.test(call.args.target)), false);
+});
+
+test('add_draft_localization refuses duplicate picker options and does not Save', async () => {
+  const gameId = '101003';
+  const before = draft(gameId);
+  delete before.title.es;
+  for (const field of ['seo_description','description','short_description','instructions']) delete before.fields[field].es;
+  delete before.completeness.es;
+  delete before.media.icon.es;
+  delete before.media.cover.es;
+  const browser = mockBrowser([
+    ...pageAndDraft(gameId, before),
+    { root_count: 1, tabs: [{ label: 'Русский', active: true }], picker_count: 1, picker_disabled: false, listbox_count: 0 },
+    page(gameId),
+    { listbox_count: 1, options: [{ label: 'Испанский', disabled: false }, { label: 'Испанский', disabled: false }] },
+  ]);
+  const result = await invokeDomainTool('add_draft_localization', { game_id: gameId, language: 'es' }, browser);
+  assert.equal(result.isError, undefined);
+  const report = resultValue(result);
+  assert.equal(report.ok, false);
+  assert.equal(report.saved, false);
+  assert.match(report.reason, /one exact supported language option/);
+  assert.equal(browser.calls.some(call => call.name === 'browser_click' && call.args.target.includes('[role="option"]:text-is(')), false);
+  assert.equal(browser.calls.some(call => call.name === 'browser_click' && call.args.target.includes('form__button[type="submit"]')), false);
+});
+
+test('add_draft_localization is idempotent for an already verified locale', async () => {
+  const gameId = '101003';
+  const existing = draft(gameId);
+  existing.fields.features.languages.push('es');
+  const browser = mockBrowser(pageAndDraft(gameId, existing));
+  const result = await invokeDomainTool('add_draft_localization', { game_id: gameId, language: 'es' }, browser);
+  const report = resultValue(result);
+  assert.equal(report.ok, true);
+  assert.equal(report.added, false);
+  assert.equal(report.verified, true);
+  assert.equal(browser.calls.some(call => call.name === 'browser_click'), false);
+});
+
+test('localized update fails closed when a region-specific Console label does not match Intl', async () => {
+  const gameId = '101003';
+  const before = draft(gameId, 'ru', { title: { ru: 'Demo', 'es-MX': 'Demo' }, completeness: { ru: {}, 'es-MX': {} } });
+  const browser = mockBrowser([
+    ...pageAndDraft(gameId, before),
+    [{ label: 'Русский', active: true }, { label: 'Mexican Spanish', active: false }],
+  ]);
+  const result = await invokeDomainTool('update_localized_fields', {
+    game_id: gameId, language: 'es-MX', fields: { title: 'Titulo' },
+  }, browser);
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /language tabs are missing or ambiguous/);
+  assert.equal(browser.calls.some(call => call.name === 'browser_click' || call.name === 'browser_fill_form'), false);
 });
 
 test('media preflight rejects invalid input before any browser call', async () => {
@@ -133,7 +245,7 @@ test('valid media upload saves once, verifies the new locale file ID, and never 
     assert.equal(values.length,0);
     const clicks=browser.calls.filter(call=>call.name==='browser_click');
     assert.ok(browser.calls.some(call=>call.name==='browser_wait_for' && call.args.time===2));
-    assert.equal(clicks.filter(call=>/Сохранить/.test(call.args.target ?? '')).length,1);
+    assert.equal(clicks.filter(call=>/form__button\[type="submit"\]:visible/.test(call.args.target ?? '')).length,1);
     assert.equal(clicks.some(call=>/moder|submit|отправ/i.test(call.args.element ?? call.args.target)),false);
   } finally {
     await rm(folder,{recursive:true,force:true});
@@ -179,7 +291,7 @@ test('existing media needs an explicit replace flag and its saved file ID is ver
     assert.equal(values.length,0);
     const clicks=browser.calls.filter(call=>call.name==='browser_click');
     assert.equal(clicks.filter(call=>/form-attach__close/.test(call.args.target??'')).length,1);
-    assert.equal(clicks.filter(call=>/Сохранить/.test(call.args.target??'')).length,1);
+    assert.equal(clicks.filter(call=>/form__button\[type="submit"\]:visible/.test(call.args.target??'')).length,1);
   } finally {
     await rm(folder,{recursive:true,force:true});
   }

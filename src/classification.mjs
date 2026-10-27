@@ -197,7 +197,7 @@ export async function updateDraftClassification(gameId, requested, browser) {
   }
   if (!selected.page_ok || selected.save_count !== 1 || !selected.save_enabled)
     throw new Error('Target draft or enabled Save button is missing or ambiguous; nothing was saved');
-  await browser.call('browser_click', { target: 'button:has-text("Сохранить")', element: 'кнопка сохранения черновика' });
+  await browser.call('browser_click', { target: 'button.form__button[type="submit"]:text-is("Сохранить")', element: 'кнопка сохранения черновика' });
   await browser.call('browser_wait_for', { time: 2 });
   const after = await evaluate(browser, `async () => {
     if(location.origin!=='${CONSOLE_ORIGIN}'||location.pathname!=='/console/application/${gameId}'||location.hash!=='#application-info-draft') return {ok:false,reason:'wrong_page_after_save'};

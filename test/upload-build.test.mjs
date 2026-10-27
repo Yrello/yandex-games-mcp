@@ -101,7 +101,7 @@ test('build upload uploads once, saves once, and verifies persisted API file ID'
     assert.equal(String(report.new_file_id), 'new-file');
     assert.equal(values.length, 0);
     assert.equal(browser.calls.filter(call => call.name === 'browser_file_upload').length, 1);
-    assert.equal(browser.calls.filter(call => call.name === 'browser_click' && /Сохранить/.test(call.args.target ?? '')).length, 1);
+    assert.equal(browser.calls.filter(call => call.name === 'browser_click' && call.args.target === 'button.form__button[type="submit"]:visible').length, 1);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
@@ -123,7 +123,7 @@ test('build upload with unknown upload ID never saves', async () => {
     assert.equal(report.uploaded, 'unknown');
     assert.equal(report.saved, false);
     assert.equal(values.length, 0);
-    assert.equal(browser.calls.some(call => call.name === 'browser_click' && /Сохранить/.test(call.args.target ?? '')), false);
+    assert.equal(browser.calls.some(call => call.name === 'browser_click' && call.args.target === 'button.form__button[type="submit"]:visible'), false);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
@@ -146,7 +146,7 @@ test('build upload reports failure when the post-save API file ID differs', asyn
     assert.equal(report.saved, 'unknown');
     assert.match(report.reason, /did not confirm its file ID/);
     assert.equal(values.length, 0);
-    assert.equal(browser.calls.filter(call => call.name === 'browser_click' && /Сохранить/.test(call.args.target ?? '')).length, 1);
+    assert.equal(browser.calls.filter(call => call.name === 'browser_click' && call.args.target === 'button.form__button[type="submit"]:visible').length, 1);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }

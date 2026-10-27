@@ -128,6 +128,47 @@ test('inspect_draft_form rejects invalid IDs before browser access', async () =>
   assert.equal(browser.calls.length, 0);
 });
 
+test('get_draft_localizations separates locales from feature metadata and returns bounded picker data read only', async () => {
+  const browser = mockBrowser([
+    { origin: 'https://games.yandex.ru', pathname: '/console/application/101003', hash: '#application-info-draft' },
+    { ok: true, title: { ru: 'Demo', es: 'Demo' }, fields: {
+      description: { ru: '', es: '' }, features: { languages: ['ru', 'es'], game_languages: { ru: true }, orientation: 'landscape', platforms: { desktop: true } },
+    }, completeness: { ru: {}, es: {} }, media: { screenshots: { type: 'array', files: [] } } },
+    [{ label: 'Русский', active: true }, { label: 'Испанский', active: false },
+      { label: '', aria_label: '', data_language: '', text: '', active: false }],
+    { candidate_found: true, candidate_count: 1, activation: 'not_attempted',
+      controls: [{ tag: 'button', label: 'Добавить язык', data_qa: 'locale-add', visible: true, options: [] }],
+      options: [{ label: 'French', value: 'fr', selected: false, disabled: false }] },
+  ]);
+  const result = await invokeDomainTool('get_draft_localizations', { game_id: '101003' }, browser);
+  const report = JSON.parse(result.content[0].text);
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.added_locales, ['es', 'ru']);
+  assert.deepEqual(report.gameplay_languages, { ru: true });
+  assert.equal(report.locale_picker.candidate_found, true);
+  assert.equal(report.locale_picker.activation, 'not_attempted');
+  assert.deepEqual(report.locale_picker.options.map(option => option.value), ['fr']);
+  assert.equal(report.console_tabs.length, 3);
+  assert.equal(report.console_tabs[2].language, null);
+  assert.equal(browser.calls.some(call => call.name === 'browser_click'), false);
+});
+
+test('get_draft_localizations ignores malformed API keys and keeps unmatched tabs unmapped', async () => {
+  const browser = mockBrowser([
+    { origin: 'https://games.yandex.ru', pathname: '/console/application/101003', hash: '#application-info-draft' },
+    { ok: true, title: { ru: 'Demo', 'bad??': 'Malformed' }, fields: {
+      description: { ru: '' }, features: { languages: ['ru'], orientation: 'landscape', languages_extra: { nonsense: true } },
+    }, completeness: { ru: {} }, media: { screenshots: { type: 'array', files: [] } } },
+    [{ label: 'Русский', active: true }, { label: 'Unmapped Locale', active: false }],
+    { candidate_found: false, candidate_count: 0, activation: 'not_attempted', controls: [], options: [] },
+  ]);
+  const result = await invokeDomainTool('get_draft_localizations', { game_id: '101003' }, browser);
+  const report = JSON.parse(result.content[0].text);
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.added_locales, ['ru']);
+  assert.deepEqual(report.console_tabs.map(tab => tab.language), ['ru', null]);
+});
+
 test('moderation feedback reads a published application without a draft', async () => {
   const browser = mockBrowser([
     { ok: true, title: { ru: 'Тестовая игра' }, release_type: 'published',
@@ -160,8 +201,9 @@ test('moderation feedback uses the visible game listing when release metadata is
 
 test('exposes read and draft update tools while moderation actions remain deferred', () => {
   assert.deepEqual(toolDefinitions.map(tool => tool.name), [
-    'inspect_console', 'list_games', 'get_draft', 'inspect_draft_form', 'check_draft', 'check_media_files', 'get_moderation_feedback',
-    'update_fields', 'update_localized_fields', 'upload_draft_media', 'upload_draft_screenshot', 'update_draft_classification', 'update_draft_age_rating', 'upload_build',
+    'inspect_console', 'list_games', 'get_draft', 'inspect_draft_form', 'get_draft_localizations', 'add_draft_localization', 'check_draft', 'check_media_files', 'get_moderation_feedback',
+    'update_fields', 'update_localized_fields', 'upload_draft_media', 'upload_draft_screenshot', 'update_draft_classification', 'update_draft_age_rating',
+    'inspect_leaderboard_form', 'list_leaderboards', 'get_leaderboard', 'create_leaderboard', 'update_leaderboard', 'delete_leaderboard', 'upload_build',
   ]);
 });
 
@@ -210,10 +252,10 @@ test('update_fields reads title from the top-level localized API property and co
   assert.equal(value.ok, true, JSON.stringify(value));
   assert.deepEqual(value.fields, { title: 'New title' });
   assert.equal(browser.calls.filter(call => call.name === 'browser_click').length, 2);
-  assert.ok(browser.calls.some(call => call.name === 'browser_click' && call.args.target.includes('Русский')));
+  assert.ok(browser.calls.some(call => call.name === 'browser_click' && `${call.args.target} ${call.args.element}`.includes('Русский')));
 });
 
-test('update_fields verifies comma-separated keywords against the API keyword array', async () => {
+test('update_fields saves through the visible draft submit, ignoring hidden Save controls', async () => {
   const keywords = 'Demo, числа, головоломка, слияние, плитки, цепочки';
   const browser = mockBrowser([
     { origin: 'https://games.yandex.ru', pathname: '/console/application/101003', hash: '#application-info-draft' },
@@ -231,7 +273,11 @@ test('update_fields verifies comma-separated keywords against the API keyword ar
   assert.deepEqual(value.fields, { keywords });
   assert.deepEqual(value.changed_fields, ['keywords']);
   assert.equal(browser.calls.filter(call => call.name === 'browser_click'
-    && call.args.target.includes('Сохранить')).length, 1);
+    && call.args.target.includes('form__button[type="submit"]:visible')).length, 1);
+  const saveProbe = browser.calls.find(call => call.name === 'browser_evaluate'
+    && call.args.function.includes('button.form__button'));
+  assert.ok(saveProbe);
+  assert.match(saveProbe.args.function, /getClientRects\(\)\.length/);
 });
 
 test('update_fields rejects prototype field names before opening the browser', async () => {
@@ -256,7 +302,7 @@ test('update_fields refuses duplicate Save buttons and verifies restoration in t
   assert.equal(value.ok, false);
   assert.equal(value.saved, false);
   assert.equal(value.restored, true);
-  assert.equal(browser.calls.some(call => call.name === 'browser_click' && call.args.target.includes('Сохранить')), false);
+  assert.equal(browser.calls.some(call => call.name === 'browser_click' && call.args.target.includes('form__button[type="submit"]:visible')), false);
 });
 
 test('update_fields stops when the browser is on another game', async () => {

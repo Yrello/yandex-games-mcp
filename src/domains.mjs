@@ -6,6 +6,7 @@ import { validateScreenshotPath } from './screenshot-preflight.mjs';
 import { classificationToolDefinition, updateDraftClassification } from './classification.mjs';
 import { ageRatingToolDefinition, updateDraftAgeRating } from './settings.mjs';
 import { suggestDraftActions } from './draft-guidance.mjs';
+import { leaderboardToolDefinitions, invokeLeaderboardTool } from './leaderboards.mjs';
 
 const CONSOLE_URL = 'https://games.yandex.ru/console/';
 const MAX_TEXT = 6000;
@@ -27,7 +28,15 @@ const TEXT_FIELD_SELECTORS = {
   developer_comment: gameId => `#developer-comment${gameId}`,
 };
 const LOCALIZED_FIELDS = ['title', 'seo_description', 'description', 'short_description', 'instructions'];
-const LOCALE_LABELS = { ru: 'Русский', en: 'Английский' };
+const DRAFT_SAVE_SELECTOR = 'button.form__button[type="submit"]';
+const DRAFT_SAVE_TARGET = `${DRAFT_SAVE_SELECTOR}:visible`;
+const localeLabel = language => {
+  try { return new Intl.DisplayNames(['ru'], { type: 'language' }).of(language); }
+  catch { return null; }
+};
+const localeTabLabelExpression = `(el) => el.firstElementChild?.getAttribute('title') || ''`;
+const activeLocaleLabelsExpression = `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab_active'))
+  .map(el => (${localeTabLabelExpression})(el).trim()).filter(Boolean)`;
 const MEDIA_INPUTS = { icon: gameId => `#icon-field${gameId}`, cover: gameId => `#cover-field${gameId}` };
 const MEDIA_BUTTONS = { icon: gameId => `#uploader-icon-field${gameId}`, cover: gameId => `#uploader-cover-field${gameId}` };
 const MISSING_FIELD_DETAILS = {
@@ -67,7 +76,17 @@ export const toolDefinitions = [
   {
     name: 'inspect_draft_form',
     description: 'Read bounded form controls and safe draft/catalog shapes for one exact game draft. Does not change the draft.',
-    inputSchema: { type: 'object', properties: { game_id: { type: 'string', pattern: '^[0-9]+$' }, language: { type: 'string', enum: ['ru', 'en'] } }, required: ['game_id'], additionalProperties: false },
+    inputSchema: { type: 'object', properties: { game_id: { type: 'string', pattern: '^[0-9]+$' }, language: { type: 'string', pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$' } }, required: ['game_id'], additionalProperties: false },
+  },
+  {
+    name: 'get_draft_localizations',
+    description: 'Read added draft locales and locale tabs currently available in the Console for one exact game. Does not change the draft.',
+    inputSchema: { type: 'object', properties: { game_id: { type: 'string', pattern: '^[0-9]+$' } }, required: ['game_id'], additionalProperties: false },
+  },
+  {
+    name: 'add_draft_localization',
+    description: 'Add one Console-supported locale to a game draft, save once, and verify its locale code. Does not submit.',
+    inputSchema: { type: 'object', properties: { game_id: { type: 'string', pattern: '^[0-9]+$' }, language: { type: 'string', pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$' } }, required: ['game_id', 'language'], additionalProperties: false },
   },
   {
     name: 'check_draft',
@@ -128,12 +147,12 @@ export const toolDefinitions = [
   },
   {
     name: 'update_localized_fields',
-    description: 'Update only supplied localized text fields in a ru or en game draft, save once, and verify that language through the draft API. Does not submit.',
+    description: 'Update supplied localized text fields for one locale present in the draft, save once, and verify through the draft API. Does not submit.',
     inputSchema: {
       type: 'object',
       properties: {
         game_id: { type: 'string', pattern: '^[0-9]+$' },
-        language: { type: 'string', enum: ['ru', 'en'] },
+        language: { type: 'string', pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$' },
         fields: { type: 'object', minProperties: 1, additionalProperties: false, properties: {
           title: { type: 'string', maxLength: 50 },
           seo_description: { type: 'string', maxLength: 160 },
@@ -150,7 +169,7 @@ export const toolDefinitions = [
     description: 'Upload icon and/or cover PNG files to one draft language; set replace_existing=true to replace a saved image. Saves once and verifies file IDs. Does not submit.',
     inputSchema: {
       type: 'object',
-      properties: { game_id: { type: 'string', pattern: '^[0-9]+$' }, language: { type: 'string', enum: ['ru', 'en'] },
+      properties: { game_id: { type: 'string', pattern: '^[0-9]+$' }, language: { type: 'string', pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$' },
         icon_path: { type: 'string', minLength: 1 }, cover_path: { type: 'string', minLength: 1 },
         replace_existing: { type: 'boolean' } },
       required: ['game_id', 'language'], additionalProperties: false,
@@ -158,16 +177,17 @@ export const toolDefinitions = [
   },
   {
     name: 'upload_draft_screenshot',
-    description: 'Add one desktop landscape PNG/JPEG screenshot to a ru or en draft, save once, and verify the file ID. Does not upload video or submit.',
+    description: 'Add one desktop landscape PNG/JPEG screenshot to a draft locale, save once, and verify the file ID. Does not upload video or submit.',
     inputSchema: {
       type: 'object',
-      properties: { game_id: { type: 'string', pattern: '^[0-9]+$' }, language: { type: 'string', enum: ['ru', 'en'] },
+      properties: { game_id: { type: 'string', pattern: '^[0-9]+$' }, language: { type: 'string', pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$' },
         screenshot_path: { type: 'string', minLength: 1 } },
       required: ['game_id', 'language', 'screenshot_path'], additionalProperties: false,
     },
   },
   classificationToolDefinition,
   ageRatingToolDefinition,
+  ...leaderboardToolDefinitions,
   {
     name: 'upload_build',
     description: 'Upload one ZIP archive (up to 100 MiB with root index.html) from inside this project, save the draft, and verify its file ID. Does not submit for moderation or publish.',
@@ -325,6 +345,7 @@ function applicationExpression(gameId) {
         features: { orientation: draft.features?.orientation ?? null,
           age_rating: draft.features?.age_rating ?? null, age_rating_num: draft.features?.age_rating_num ?? null,
           cloud_save: draft.features?.cloud_save ?? null, languages: draft.features?.languages ?? [],
+          game_languages: draft.features?.game_languages ?? null,
           platforms: Object.entries(draft.features?.platforms ?? {}).map(([platform, modes]) =>
             [platform, Object.keys(modes ?? {}).filter(mode => modes[mode])]).filter(([, modes]) => modes.length) },
         languages: draft.languages ?? {} },
@@ -448,8 +469,25 @@ function fieldValuesMatch(field, actual, expected) {
 }
 
 function assertLanguage(value) {
-  if (!Object.hasOwn(LOCALE_LABELS, value)) throw new Error('language must be ru or en');
+  if (!isLanguageCode(value)) throw new Error('language must be a valid BCP 47 language code');
   return value;
+}
+
+function isLanguageCode(value) {
+  if (typeof value !== 'string' || !/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(value)) return false;
+  try { return Intl.getCanonicalLocales(value).length === 1; }
+  catch { return false; }
+}
+
+function draftLocaleCodes(draft) {
+  const maps = [draft.title, draft.fields?.seo_description, draft.fields?.description,
+    draft.fields?.short_description, draft.fields?.instructions, draft.media?.icon,
+    draft.media?.cover, draft.completeness];
+  const mapped = maps.flatMap(value => value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).filter(isLanguageCode) : []);
+  const declared = Array.isArray(draft.fields?.features?.languages)
+    ? draft.fields.features.languages.filter(isLanguageCode) : [];
+  return [...new Set([...mapped, ...declared])];
 }
 
 function assertLocalizedFields(fields) {
@@ -540,30 +578,109 @@ function draftFormExpression(gameId) {
 }
 
 async function ensureLocale(playwright, gameId, language, draft) {
-  if (!draft.fields?.features?.languages?.includes(language) || !Object.hasOwn(draft.completeness ?? {}, language)) {
-    throw new Error(`Language ${language} is not present in this draft`);
-  }
-  const label = LOCALE_LABELS[language];
+  const expectedLabel = localeLabel(language);
+  if (!expectedLabel || expectedLabel.toLowerCase() === language.toLowerCase()) throw new Error(`Could not map language ${language} to a Console tab label`);
   const tabs = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab'))
-    .map(el => ({ label: el.firstElementChild?.getAttribute('title') ?? '',
-      active: el.classList.contains('gc-adaptive-tabs__tab_active') }))`);
-  if (tabs.filter(tab => tab.label === label).length !== 1 || tabs.filter(tab => tab.active).length !== 1) {
+    .map(el => ({ label: (${localeTabLabelExpression})(el).trim(), active: el.classList.contains('gc-adaptive-tabs__tab_active') }))
+    .filter(tab => tab.label)`);
+  if (tabs.filter(tab => tab.label.toLowerCase() === expectedLabel.toLowerCase()).length !== 1 || tabs.filter(tab => tab.active).length !== 1) {
     throw new Error('Draft language tabs are missing or ambiguous');
   }
+  const label = tabs.find(tab => tab.label.toLowerCase() === expectedLabel.toLowerCase()).label;
   if (!tabs.some(tab => tab.label === label && tab.active)) {
     await ensureDraftPage(playwright, gameId);
     resultText(await playwright.call('browser_click', {
       target: `.gc-adaptive-tabs__tab > div[title=${JSON.stringify(label)}]`, element: `${label} draft language tab`,
     }));
   }
-  const active = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab_active'))
-    .map(el => el.firstElementChild?.getAttribute('title') ?? '')`);
-  if (active.length !== 1 || active[0] !== label) throw new Error(`Could not confirm active language ${language}`);
+  const active = await evaluate(playwright, activeLocaleLabelsExpression);
+  if (active.length !== 1 || active[0].toLowerCase() !== label.toLowerCase()) throw new Error(`Could not confirm active language ${language}`);
+  return label;
+}
+
+async function addDraftLocalization(gameId, language, playwright) {
+  const before = await openDraft(playwright, gameId);
+  const currentLocales = before.fields?.features?.languages;
+  const hasLocale = Array.isArray(currentLocales) && currentLocales.includes(language);
+  const hasCompleteness = Object.hasOwn(before.completeness ?? {}, language);
+  if (hasLocale && hasCompleteness) return { ok: true, action: 'add_draft_localization', game_id: gameId,
+    language, added: false, saved: true, verified: true, reason: 'locale is already present' };
+  if (hasLocale || hasCompleteness) return { ok: false, action: 'add_draft_localization', game_id: gameId,
+    language, added: false, saved: false, reason: 'draft locale metadata is inconsistent; inspect the draft before retrying' };
+
+  const label = localeLabel(language);
+  if (!label || label.toLowerCase() === language.toLowerCase()) throw new Error(`Could not map language ${language} to a Console picker label`);
+  const state = await evaluate(playwright, `() => {
+    const visible = el => Boolean(el?.getClientRects().length);
+    const root = document.querySelector('[data-qa="application-draft-languages"]');
+    const tabs = root ? Array.from(root.querySelectorAll('.gc-adaptive-tabs__tab')).map(el => ({
+      label: el.firstElementChild?.getAttribute('title') ?? '', active: el.classList.contains('gc-adaptive-tabs__tab_active') })) : [];
+    const pickers = root ? Array.from(root.querySelectorAll(':scope > .g-select > button')).filter(visible) : [];
+    const listboxes = Array.from(document.querySelectorAll('[role="listbox"]')).filter(visible);
+    return { root_count: document.querySelectorAll('[data-qa="application-draft-languages"]').length,
+      tabs, picker_count: pickers.length, picker_disabled: pickers.length === 1 && Boolean(pickers[0].disabled),
+      listbox_count: listboxes.length };
+  }`);
+  if (state.root_count !== 1 || state.picker_count !== 1 || state.picker_disabled || state.listbox_count !== 0) {
+    return { ok: false, action: 'add_draft_localization', game_id: gameId, language,
+      added: false, saved: false, reason: 'locale picker is missing, already open, or ambiguous; nothing was changed' };
+  }
+  if (state.tabs.filter(tab => tab.label.toLowerCase() === label.toLowerCase()).length) return { ok: false,
+    action: 'add_draft_localization', game_id: gameId, language, added: false, saved: false,
+    reason: 'locale tab is present but draft API does not confirm it; inspect draft before retrying' };
+
+  await ensureDraftPage(playwright, gameId);
+  resultText(await playwright.call('browser_click', {
+    target: '[data-qa="application-draft-languages"] > .g-select > button',
+    element: 'add draft locale picker',
+  }));
+  const options = await evaluate(playwright, `() => {
+    const visible = el => Boolean(el.getClientRects().length);
+    const boxes = Array.from(document.querySelectorAll('[role="listbox"]')).filter(visible);
+    const options = Array.from(document.querySelectorAll('[role="option"]')).filter(visible).map(el => ({
+      label: String(el.getAttribute('aria-label') || el.innerText || '').replace(/\\s+/g, ' ').trim(),
+      disabled: el.getAttribute('aria-disabled') === 'true' }));
+    return { listbox_count: boxes.length, options };
+  }`);
+  const matches = options.options.filter(option => option.label.toLowerCase() === label.toLowerCase() && !option.disabled);
+  if (options.listbox_count !== 1 || matches.length !== 1) return { ok: false,
+    action: 'add_draft_localization', game_id: gameId, language, added: false, saved: false,
+    reason: 'picker did not expose one exact supported language option; no option was selected' };
+
+  await ensureDraftPage(playwright, gameId);
+  resultText(await playwright.call('browser_click', {
+    target: `[role="listbox"] [role="option"]:has-text(${JSON.stringify(matches[0].label)})`,
+    element: `${matches[0].label} locale option`,
+  }));
+  const selected = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab'))
+    .map(el => ({ label: el.firstElementChild?.getAttribute('title') ?? '', active: el.classList.contains('gc-adaptive-tabs__tab_active') }))`);
+  if (selected.filter(tab => tab.label.toLowerCase() === label.toLowerCase()).length !== 1
+    || selected.filter(tab => tab.active && tab.label.toLowerCase() === label.toLowerCase()).length !== 1) {
+    return { ok: false, action: 'add_draft_localization', game_id: gameId, language,
+      added: 'unknown', saved: false, reason: 'selected locale tab could not be verified; draft was not saved' };
+  }
+  const save = await saveButtonState(playwright);
+  if (save.count !== 1 || !save.enabled) return { ok: false, action: 'add_draft_localization', game_id: gameId,
+    language, added: true, saved: false, reason: 'locale is selected but the unique draft Save button is unavailable' };
+  await ensureDraftPage(playwright, gameId);
+  resultText(await playwright.call('browser_click', { target: DRAFT_SAVE_TARGET, element: 'кнопка сохранения черновика' }));
+  await playwright.call('browser_wait_for', { time: 2 });
+  const after = await evaluate(playwright, applicationExpression(gameId));
+  if (!after.ok) return { ok: false, action: 'add_draft_localization', game_id: gameId, language,
+    added: true, saved: 'unknown', reason: 'could not read the draft after save' };
+  const verified = Array.isArray(after.fields?.features?.languages)
+    && after.fields.features.languages.includes(language)
+    && Object.hasOwn(after.completeness ?? {}, language);
+  return { ok: verified, action: 'add_draft_localization', game_id: gameId, language,
+    added: true, saved: verified ? true : 'unknown', verified,
+    locale_codes: after.fields?.features?.languages ?? [], completeness_locales: Object.keys(after.completeness ?? {}),
+    ...(!verified ? { reason: 'saved draft did not confirm the locale in both language and completeness metadata' } : {}) };
 }
 
 async function saveButtonState(playwright) {
   return evaluate(playwright, `() => {
-    const buttons = Array.from(document.querySelectorAll('button')).filter(el => el.innerText.trim() === 'Сохранить');
+    const buttons = Array.from(document.querySelectorAll(${JSON.stringify(DRAFT_SAVE_SELECTOR)}))
+      .filter(el => el.getClientRects().length && el.innerText.trim() === 'Сохранить');
     return { count: buttons.length, enabled: buttons.filter(el => !el.disabled).length,
       disabled: buttons.length !== 1 || buttons[0].disabled };
   }`);
@@ -609,12 +726,11 @@ async function updateLocalizedFields(gameId, language, fields, playwright) {
         : 'save button is unavailable; restoring previous form values could not be verified' };
   }
   await ensureDraftPage(playwright, gameId);
-  const activeBeforeSave = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab_active'))
-    .map(el => el.firstElementChild?.getAttribute('title') ?? '')`);
-  if (activeBeforeSave.length !== 1 || activeBeforeSave[0] !== LOCALE_LABELS[language]) {
+  const activeBeforeSave = await evaluate(playwright, activeLocaleLabelsExpression);
+  if (activeBeforeSave.length !== 1 || activeBeforeSave[0].toLowerCase() !== localeLabel(language).toLowerCase()) {
     throw new Error('Draft language changed before save; nothing was saved');
   }
-  resultText(await playwright.call('browser_click', { target: 'button:has-text("Сохранить")', element: 'кнопка сохранения черновика' }));
+  resultText(await playwright.call('browser_click', { target: DRAFT_SAVE_TARGET, element: 'кнопка сохранения черновика' }));
   await playwright.call('browser_wait_for', { time: 2 });
   const after = await evaluate(playwright, applicationExpression(gameId));
   if (!after.ok) return { ok: false, action: 'update_localized_fields', game_id: gameId, language,
@@ -678,11 +794,11 @@ async function updateTextFields(gameId, fields, playwright) {
 
   await ensureDraftPage(playwright, gameId);
   if (names.some(name => LOCALIZED_FIELDS.includes(name))) {
-    const activeLocale = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab_active')).map(el => el.firstElementChild?.getAttribute('title') ?? '')`);
-    if (activeLocale.length !== 1 || activeLocale[0] !== LOCALE_LABELS.ru) throw new Error('Draft language changed before save; nothing was saved');
+    const activeLocale = await evaluate(playwright, activeLocaleLabelsExpression);
+    if (activeLocale.length !== 1 || activeLocale[0].toLowerCase() !== localeLabel('ru').toLowerCase()) throw new Error('Draft language changed before save; nothing was saved');
   }
   resultText(await playwright.call('browser_click', {
-    target: 'button:has-text("Сохранить")', element: 'кнопка сохранения черновика',
+    target: DRAFT_SAVE_TARGET, element: 'кнопка сохранения черновика',
   }));
   await playwright.call('browser_wait_for', { time: 2 });
 
@@ -812,7 +928,9 @@ async function uploadBuild(gameId, zipPath, playwright) {
     const formState = await evaluate(playwright, `() => {
       const link = Array.from(document.querySelectorAll('a[href*="/console/api/files/archive?file-id="]'))[0];
       const match = link?.href.match(/[?&]file-id=([0-9]+)/);
-      const button = Array.from(document.querySelectorAll('button')).find(el => el.innerText.trim() === 'Сохранить');
+      const buttons = Array.from(document.querySelectorAll(${JSON.stringify(DRAFT_SAVE_SELECTOR)}))
+        .filter(el => el.getClientRects().length && el.innerText.trim() === 'Сохранить');
+      const button = buttons.length === 1 ? buttons[0] : null;
       return { file_id: match?.[1] ?? null, save_found: Boolean(button), save_disabled: !button || button.disabled };
     }`);
     if (formState.file_id && String(formState.file_id) !== String(before.build.file_id)) {
@@ -841,7 +959,7 @@ async function uploadBuild(gameId, zipPath, playwright) {
   }
   await ensureDraftPage(playwright, gameId);
   resultText(await playwright.call('browser_click', {
-    target: 'button:has-text("Сохранить")', element: 'кнопка сохранения черновика',
+    target: DRAFT_SAVE_TARGET, element: 'кнопка сохранения черновика',
   }));
   await playwright.call('browser_wait_for', { time: 2 });
   const savedDraft = await evaluate(playwright, applicationExpression(gameId));
@@ -892,9 +1010,8 @@ async function uploadDraftMedia(gameId, language, requested, replaceExisting, pl
   const selectedFileIds = {};
   for (const kind of kinds) {
     await ensureDraftPage(playwright, gameId);
-    const activeBeforeUpload = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab_active'))
-      .map(el => el.firstElementChild?.getAttribute('title') ?? '')`);
-    if (activeBeforeUpload.length !== 1 || activeBeforeUpload[0] !== LOCALE_LABELS[language]) {
+    const activeBeforeUpload = await evaluate(playwright, activeLocaleLabelsExpression);
+    if (activeBeforeUpload.length !== 1 || activeBeforeUpload[0].toLowerCase() !== localeLabel(language).toLowerCase()) {
       throw new Error('Draft language changed before media upload; nothing was saved');
     }
     if (oldFileIds[kind] !== null) {
@@ -956,12 +1073,11 @@ async function uploadDraftMedia(gameId, language, requested, replaceExisting, pl
       reason: 'media selected, but draft save is unavailable; inspect draft before retrying' };
   }
   await ensureDraftPage(playwright, gameId);
-  const activeBeforeSave = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab_active'))
-    .map(el => el.firstElementChild?.getAttribute('title') ?? '')`);
-  if (activeBeforeSave.length !== 1 || activeBeforeSave[0] !== LOCALE_LABELS[language]) {
+  const activeBeforeSave = await evaluate(playwright, activeLocaleLabelsExpression);
+  if (activeBeforeSave.length !== 1 || activeBeforeSave[0].toLowerCase() !== localeLabel(language).toLowerCase()) {
     throw new Error('Draft language changed before save; nothing was saved');
   }
-  resultText(await playwright.call('browser_click', { target: 'button:has-text("Сохранить")', element: 'кнопка сохранения черновика' }));
+  resultText(await playwright.call('browser_click', { target: DRAFT_SAVE_TARGET, element: 'кнопка сохранения черновика' }));
   await playwright.call('browser_wait_for', { time: 2 });
   const after = await evaluate(playwright, applicationExpression(gameId));
   if (!after.ok) return { ok: false, action: 'upload_draft_media', game_id: gameId,
@@ -1008,7 +1124,7 @@ async function uploadDraftScreenshot(gameId, language, screenshotPath, playwrigh
   }`);
   const validContext = state => state.container_count === 1 && state.platform_count === 1
     && state.platform_text === 'Десктопные' && state.orientation_count === 1
-    && state.orientation_text === 'Альбомная' && state.active_locale === LOCALE_LABELS[language];
+    && state.orientation_text === 'Альбомная' && state.active_locale?.toLowerCase() === localeLabel(language).toLowerCase();
   const formBefore = await readForm();
   if (!validContext(formBefore) || formBefore.input_count !== 1 || formBefore.button_count !== 1
     || formBefore.input_name !== 'screenshots-desktop'
@@ -1042,7 +1158,7 @@ async function uploadDraftScreenshot(gameId, language, screenshotPath, playwrigh
       reason: 'Screenshot selected, but draft save is unavailable or form changed; inspect draft before retrying' };
   }
   await ensureDraftPage(playwright, gameId);
-  resultText(await playwright.call('browser_click', { target: 'button:has-text("Сохранить")', element: 'кнопка сохранения черновика' }));
+  resultText(await playwright.call('browser_click', { target: DRAFT_SAVE_TARGET, element: 'кнопка сохранения черновика' }));
   await playwright.call('browser_wait_for', { time: 2 });
   const after = await evaluate(playwright, applicationExpression(gameId));
   const newFiles = after.ok ? after.media?.screenshots?.files ?? [] : [];
@@ -1076,6 +1192,56 @@ export async function invokeDomainTool(name, args = {}, playwright) {
         const data = await evaluate(playwright, draftFormExpression(gameId));
         if (!data.ok) return asError(name, data.reason ?? 'form_unavailable');
         return asResult({ ...data, action: name });
+      }
+      case 'get_draft_localizations': {
+        const gameId = assertGameId(args.game_id);
+        const draft = await openDraft(playwright, gameId);
+        const tabs = await evaluate(playwright, `() => Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab'))
+          .map(el => ({ label: el.firstElementChild?.getAttribute('title') ?? '',
+            aria_label: el.getAttribute('aria-label') || el.firstElementChild?.getAttribute('aria-label') || '',
+            data_language: el.getAttribute('data-language') || el.getAttribute('data-locale') || '',
+            text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 80),
+            active: el.classList.contains('gc-adaptive-tabs__tab_active') }))`);
+        if (!Array.isArray(tabs)) throw new Error('Draft language tabs are unavailable');
+        const picker = await evaluate(playwright, `() => {
+          const clean = (v, n = 100) => String(v ?? '').replace(/\\s+/g, ' ').trim().slice(0, n);
+          const tabs = Array.from(document.querySelectorAll('.gc-adaptive-tabs__tab'));
+          let scope = document.querySelector('[data-qa="application-draft-languages"]') ?? tabs[0]?.parentElement ?? null;
+          for (let depth = 0; scope && depth < 3; depth += 1) {
+            if (scope.querySelectorAll('.gc-adaptive-tabs__tab').length === tabs.length) break;
+            scope = scope.parentElement;
+          }
+          if (!scope || !tabs.length) return { available: false, reason: 'locale tab container unavailable', controls: [], options: [] };
+          const nodes = Array.from(scope.querySelectorAll('button,select,[role="button"],[role="combobox"],[role="listbox"],[role="option"]')).slice(0, 40);
+          const controls = nodes.map(el => {
+            const label = clean(el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.value, 100);
+            const options = el.tagName === 'SELECT' ? Array.from(el.options).slice(0, 40).map(option => ({
+              label: clean(option.label, 100), value: clean(option.value, 40), selected: option.selected, disabled: option.disabled })) : [];
+            return { tag: el.tagName.toLowerCase(), role: clean(el.getAttribute('role'), 30), label,
+              data_qa: clean(el.getAttribute('data-qa'), 80), id: clean(el.id, 80),
+              expanded: el.getAttribute('aria-expanded'), disabled: Boolean(el.disabled),
+              visible: Boolean(el.getClientRects().length), options };
+          });
+          const actions = controls.filter(item => /add|добав|локализац|перевод|language|locale/i.test(item.label));
+          const options = controls.flatMap(control => control.options);
+          for (const el of nodes.filter(node => node.getAttribute('role') === 'option'))
+            options.push({ label: clean(el.innerText || el.getAttribute('aria-label'), 100), value: clean(el.getAttribute('data-value'), 40), selected: el.getAttribute('aria-selected') === 'true', disabled: el.getAttribute('aria-disabled') === 'true' });
+          return { candidate_found: actions.length === 1, candidate_count: actions.length,
+            activation: 'not_attempted', reason: actions.length === 1 ? 'control semantics are unverified; activation was withheld' : 'no unique add-locale control identified',
+            controls, options };
+        }`);
+        const added = draftLocaleCodes(draft);
+        return asResult({ ok: true, action: name, game_id: gameId,
+          added_locales: [...added].sort(), console_tabs: tabs.map(tab => ({ label: tab.label,
+            language: added.find(code => localeLabel(code)?.toLowerCase() === tab.label.toLowerCase()) ?? null,
+            aria_label: tab.aria_label, data_language: tab.data_language, text: tab.text, active: tab.active })),
+          locale_picker: picker,
+          gameplay_languages: draft.fields?.features?.game_languages ?? null });
+      }
+      case 'add_draft_localization': {
+        const gameId = assertGameId(args.game_id);
+        const language = assertLanguage(args.language);
+        return asResult(await addDraftLocalization(gameId, language, playwright));
       }
       case 'get_draft': {
         const gameId = assertGameId(args.game_id);
@@ -1155,6 +1321,13 @@ export async function invokeDomainTool(name, args = {}, playwright) {
         await openDraft(playwright, gameId);
         return asResult(await updateDraftAgeRating(gameId, args.age_rating, playwright));
       }
+      case 'inspect_leaderboard_form':
+      case 'list_leaderboards':
+      case 'get_leaderboard':
+      case 'create_leaderboard':
+      case 'update_leaderboard':
+      case 'delete_leaderboard':
+        return await invokeLeaderboardTool(name, args, playwright);
       case 'upload_build': {
         const gameId = assertGameId(args.game_id);
         const result = await uploadBuild(gameId, args.zip_path, playwright);
