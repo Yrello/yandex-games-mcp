@@ -1,0 +1,18 @@
+{
+  "name": "yandex-games-specialized-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "description": "Compact domain MCP wrapper for the Yandex Games console",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "login": "node scripts/login.mjs",
+    "test": "node --test test/domains.test.mjs test/browser-lifecycle.test.mjs test/media-preflight.test.mjs test/screenshot-preflight.test.mjs test/screenshot-upload.test.mjs test/classification.test.mjs test/settings.test.mjs test/draft-writes.test.mjs test/draft-guidance.test.mjs test/upload-build.test.mjs",
+    "smoke": "node test/mcp-smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@playwright/mcp": "0.0.83"
+  }
+}
